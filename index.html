@@ -7,7 +7,7 @@
 <script src="./aframe-v1.8.0.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
 <style>
-html, body { margin: 0; overflow: hidden; touch-action: none; font-family: system-ui, sans-serif; }
+html, body { margin: 0; overflow: hidden; touch-action: none; font-family: system-ui, sans-serif; background: #000; }
 #loading {
   position: fixed; inset: 0; z-index: 2000;
   display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px;
@@ -16,6 +16,7 @@ html, body { margin: 0; overflow: hidden; touch-action: none; font-family: syste
 #hint {
   position: fixed; top: 16px; left: 16px; right: 16px; z-index: 1000;
   background: #000b; color: #fff; padding: 10px 14px; border-radius: 10px; text-align: center; font-size: 15px;
+  display: none;
 }
 #bubble {
   position: fixed; z-index: 900; pointer-events: none;
@@ -46,28 +47,26 @@ html, body { margin: 0; overflow: hidden; touch-action: none; font-family: syste
   border: 0; border-radius: 999px; padding: 10px 14px; font-size: 14px; color: #222;
   background: #ffffffe6; box-shadow: 0 1px 4px #0004;
 }
-.chip.on { background: #2b6cff; color: #fff; }
 </style>
 </head>
 <body>
 
 <div id="loading">Загрузка AR...<br>Разрешите доступ к камере</div>
-<div id="hint" class="ui">Наведите камеру на QR-код</div>
-<div id="bubble" class="ui"></div>
+<div id="hint">Наведите камеру на QR-код</div>
+<div id="bubble"></div>
 
-<div id="panel" class="ui">
+<div id="panel">
   <button class="chip" id="talkBtn">💬 Заставить говорить</button>
   <button class="chip" id="stopBtn">🔇 Стоп</button>
 </div>
 
-<!-- AR-сцена -->
 <a-scene
   mindar-image="imageTargetSrc: ./targets.mind; uiLoading: no; uiScanning: no; uiError: no"
   vr-mode-ui="enabled: false"
   device-orientation-permission-ui="enabled: false"
-  cursor="rayOrigin: mouse; fuse: false">
+  cursor="rayOrigin: mouse; fuse: false"
+  renderer="antialias: true; alpha: true; colorManagement: true">
 
-  <!-- Загружаем модель один раз -->
   <a-assets>
     <a-asset-item id="olegModel" src="./dyadya_oleg_hz.glb"></a-asset-item>
   </a-assets>
@@ -76,18 +75,14 @@ html, body { margin: 0; overflow: hidden; touch-action: none; font-family: syste
   <a-entity light="type: ambient; intensity: 0.8"></a-entity>
   <a-entity light="type: directional; intensity: 0.9" position="0.5 1 1"></a-entity>
 
-  <!-- Якорь метки -->
   <a-entity id="target0" mindar-image-target="targetIndex: 0">
-    <!-- Персонаж. Компонент character загружает GLB и обрабатывает клик -->
-    <a-entity id="character" character="src: #olegModel"></a-entity>
+    <a-entity id="character" character></a-entity>
   </a-entity>
 </a-scene>
 
 <script>
 const T = AFRAME.THREE;
-const rad = T.MathUtils.degToRad;
 
-/* ================= Реплики ================= */
 const PHRASES = [
   'Привет! Я Дядя Олег. Тапни по мне ещё раз!',
   'Знаешь, в каждом QR-коде спрятана своя история.',
@@ -98,78 +93,86 @@ const PHRASES = [
 
 const state = { phraseIdx: 0, speaking: false };
 
-/* ================= Принудительный запуск камеры для A-Frame 1.8.0 ================= */
+/* ================= Принудительный запуск камеры ================= */
 (async function initCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
     });
-    console.log('Камера получена вручную');
-    
+    console.log('Камера получена');
+
     const scene = document.querySelector('a-scene');
     const attachStream = () => {
+      // Ждём, пока A-Frame создаст видеоэлемент
       const video = document.querySelector('video');
       if (video && !video.srcObject) {
         video.srcObject = stream;
         video.play().catch(e => console.error('Ошибка воспроизведения:', e));
+        console.log('Поток камеры передан в видеоэлемент');
       }
     };
-    
+
     if (scene.hasLoaded) attachStream();
     else scene.addEventListener('loaded', attachStream);
+
+    // Также пробуем сразу
+    setTimeout(attachStream, 500);
+    setTimeout(attachStream, 1500);
   } catch (err) {
     console.error('Не удалось получить доступ к камере:', err);
     const hint = document.getElementById('hint');
     hint.textContent = '⚠ Разрешите доступ к камере в настройках браузера';
+    hint.style.display = 'block';
     hint.style.background = '#ff4444';
   }
 })();
 
 /* ================= Компонент персонажа ================= */
 AFRAME.registerComponent('character', {
-  schema: { src: { type: 'selector' } },
-
   init() {
     this.mixer = null;
     this.clips = [];
     this.currentAction = null;
     this.model = null;
-    this.headAnchor = null; // точка над головой для облачка
-    this.loadModel();
+    this.headAnchor = null;
 
-    // Клик по модели
+    // Ждём загрузки ассета
+    const asset = document.getElementById('olegModel');
+    if (asset.hasLoaded) {
+      this.loadModel(asset);
+    } else {
+      asset.addEventListener('loaded', () => this.loadModel(asset));
+    }
+
     this.el.addEventListener('click', () => this.onTap());
   },
 
-  loadModel() {
-    const asset = this.data.src;
-    if (!asset) return;
+  loadModel(asset) {
+    // ИСПРАВЛЕНО: используем getAttribute вместо object3D.src
+    const src = asset.getAttribute('src');
+    console.log('Загрузка модели:', src);
 
     const loader = new T.GLTFLoader();
-    loader.load(asset.object3D.src || asset.getAttribute('src'), (gltf) => {
+    loader.load(src, (gltf) => {
       this.model = gltf.scene;
 
-      // Масштаб и положение: модель должна "стоять" на поверхности метки (y=0)
       const box = new T.Box3().setFromObject(this.model);
-      const size = box.getSize(new T.Vector3());
-      const scale = 0.15; // подберите под размер вашей модели
+      const scale = 0.15;
       this.model.scale.setScalar(scale);
       box.setFromObject(this.model);
-      this.model.position.y = -box.min.y; // ноги на y=0
+      this.model.position.y = -box.min.y;
 
-      // Точка над головой
       this.headAnchor = new T.Object3D();
       this.headAnchor.position.y = box.max.y * scale + 0.05;
       this.model.add(this.headAnchor);
 
       this.el.setObject3D('mesh', this.model);
 
-      // Анимации
       if (gltf.animations && gltf.animations.length) {
         this.clips = gltf.animations;
         this.mixer = new T.AnimationMixer(this.model);
         console.log('Загружено анимаций:', this.clips.length);
-        this.clips.forEach((c, i) => console.log(`  [${i}] ${c.name || '(без имени)'}, длительность ${c.duration.toFixed(2)}с`));
+        this.clips.forEach((c, i) => console.log(`  [${i}] ${c.name || '(без имени)'}, ${c.duration.toFixed(2)}с`));
       } else {
         console.warn('В GLB нет анимаций!');
       }
@@ -180,17 +183,15 @@ AFRAME.registerComponent('character', {
     });
   },
 
-  // Запуск анимации по индексу (номер 1 = индекс 0)
   playAnimation(index) {
     if (!this.mixer || !this.clips.length) {
       console.warn('Анимации недоступны');
       return;
     }
-    const idx = (index - 1 + this.clips.length) % this.clips.length; // номер 1 → индекс 0
+    const idx = (index - 1 + this.clips.length) % this.clips.length;
     const clip = this.clips[idx];
     if (!clip) return;
 
-    // Остановить предыдущую
     if (this.currentAction) {
       this.currentAction.fadeOut(0.3);
     }
@@ -201,7 +202,7 @@ AFRAME.registerComponent('character', {
     action.fadeIn(0.3);
     action.play();
     this.currentAction = action;
-    console.log('Запущена анимация #' + index + ' (' + clip.name + ')');
+    console.log('Запущена анимация #' + index);
   },
 
   stopAnimation() {
@@ -216,14 +217,13 @@ AFRAME.registerComponent('character', {
     if (state.speaking) return;
     const phrase = PHRASES[state.phraseIdx % PHRASES.length];
     state.phraseIdx++;
-    this.playAnimation(1); // анимация номер 1
+    this.playAnimation(1);
     this.speak(phrase);
   },
 
   speak(text) {
     state.speaking = true;
 
-    // Облачко с эффектом печатания
     const bubble = document.getElementById('bubble');
     bubble.textContent = '';
     bubble.classList.add('show');
@@ -237,7 +237,6 @@ AFRAME.registerComponent('character', {
     };
     type();
 
-    // Озвучка
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
@@ -249,7 +248,6 @@ AFRAME.registerComponent('character', {
       window.speechSynthesis.speak(u);
       this._fallbackStop = setTimeout(() => this.stopSpeak(), Math.max(4000, text.length * 90));
     } else {
-      // Если синтеза речи нет — просто прячем через несколько секунд
       this._fallbackStop = setTimeout(() => this.stopSpeak(), text.length * 80);
     }
   },
@@ -293,7 +291,7 @@ function updateBubblePosition() {
     return;
   }
   bubble.style.left = x + 'px';
-  bubble.style.top  = (y - 20) + 'px';
+  bubble.style.top = (y - 20) + 'px';
   bubble.style.opacity = '1';
 }
 
@@ -313,7 +311,7 @@ scene.addEventListener('render', updateBubblePosition);
 const target = document.getElementById('target0');
 const hint = document.getElementById('hint');
 target.addEventListener('targetFound', () => hint.style.display = 'none');
-target.addEventListener('targetLost',  () => hint.style.display = 'block');
+target.addEventListener('targetLost', () => hint.style.display = 'block');
 
 /* ================= Диагностика ================= */
 (function () {
@@ -327,11 +325,7 @@ target.addEventListener('targetLost',  () => hint.style.display = 'block');
       '<b>Запуск AR</b><br>' + lines.join('<br>') + '</div>';
   };
   window.addEventListener('error', e => show('Ошибка: ' + e.message, false));
-  window.addEventListener('unhandledrejection', e => {
-    const r = e.reason;
-    show('Ошибка: ' + (r && (r.message || r.toString()) || 'неизвестная'), false);
-  });
-  show('HTTPS: ' + (window.isSecureContext ? 'да' : 'НЕТ — камера не запустится'), window.isSecureContext);
+  show('HTTPS: ' + (window.isSecureContext ? 'да' : 'НЕТ'), window.isSecureContext);
   show('A-Frame ' + (window.AFRAME ? AFRAME.version : 'не загрузился'), !!window.AFRAME);
   const mindarOk = !!(window.AFRAME && AFRAME.components['mindar-image-target']);
   show('MindAR ' + (mindarOk ? 'загрузился' : 'не загрузился'), mindarOk);
