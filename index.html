@@ -65,7 +65,6 @@ html, body { margin: 0; overflow: hidden; touch-action: none; font-family: syste
   mindar-image="imageTargetSrc: ./targets.mind; uiLoading: no; uiScanning: no; uiError: no"
   vr-mode-ui="enabled: false"
   device-orientation-permission-ui="enabled: false"
-  renderer="antialias: true; alpha: true; colorManagement: true"
   cursor="rayOrigin: mouse; fuse: false">
 
   <!-- Загружаем модель один раз -->
@@ -99,6 +98,33 @@ const PHRASES = [
 
 const state = { phraseIdx: 0, speaking: false };
 
+/* ================= Принудительный запуск камеры для A-Frame 1.8.0 ================= */
+(async function initCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+    });
+    console.log('Камера получена вручную');
+    
+    const scene = document.querySelector('a-scene');
+    const attachStream = () => {
+      const video = document.querySelector('video');
+      if (video && !video.srcObject) {
+        video.srcObject = stream;
+        video.play().catch(e => console.error('Ошибка воспроизведения:', e));
+      }
+    };
+    
+    if (scene.hasLoaded) attachStream();
+    else scene.addEventListener('loaded', attachStream);
+  } catch (err) {
+    console.error('Не удалось получить доступ к камере:', err);
+    const hint = document.getElementById('hint');
+    hint.textContent = '⚠ Разрешите доступ к камере в настройках браузера';
+    hint.style.background = '#ff4444';
+  }
+})();
+
 /* ================= Компонент персонажа ================= */
 AFRAME.registerComponent('character', {
   schema: { src: { type: 'selector' } },
@@ -124,7 +150,6 @@ AFRAME.registerComponent('character', {
       this.model = gltf.scene;
 
       // Масштаб и положение: модель должна "стоять" на поверхности метки (y=0)
-      // Обычно GLB экспортируется с центром в середине — сдвигаем вниз на половину высоты
       const box = new T.Box3().setFromObject(this.model);
       const size = box.getSize(new T.Vector3());
       const scale = 0.15; // подберите под размер вашей модели
@@ -224,6 +249,7 @@ AFRAME.registerComponent('character', {
       window.speechSynthesis.speak(u);
       this._fallbackStop = setTimeout(() => this.stopSpeak(), Math.max(4000, text.length * 90));
     } else {
+      // Если синтеза речи нет — просто прячем через несколько секунд
       this._fallbackStop = setTimeout(() => this.stopSpeak(), text.length * 80);
     }
   },
@@ -301,6 +327,10 @@ target.addEventListener('targetLost',  () => hint.style.display = 'block');
       '<b>Запуск AR</b><br>' + lines.join('<br>') + '</div>';
   };
   window.addEventListener('error', e => show('Ошибка: ' + e.message, false));
+  window.addEventListener('unhandledrejection', e => {
+    const r = e.reason;
+    show('Ошибка: ' + (r && (r.message || r.toString()) || 'неизвестная'), false);
+  });
   show('HTTPS: ' + (window.isSecureContext ? 'да' : 'НЕТ — камера не запустится'), window.isSecureContext);
   show('A-Frame ' + (window.AFRAME ? AFRAME.version : 'не загрузился'), !!window.AFRAME);
   const mindarOk = !!(window.AFRAME && AFRAME.components['mindar-image-target']);
