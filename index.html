@@ -8,15 +8,9 @@
 <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
 <style>
 html, body { margin: 0; overflow: hidden; touch-action: none; font-family: system-ui, sans-serif; background: #000; }
-#loading {
-  position: fixed; inset: 0; z-index: 2000;
-  display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px;
-  background: #fff; font-size: 18px;
-}
 #hint {
   position: fixed; top: 16px; left: 16px; right: 16px; z-index: 1000;
   background: #000b; color: #fff; padding: 10px 14px; border-radius: 10px; text-align: center; font-size: 15px;
-  display: none;
 }
 #bubble {
   position: fixed; z-index: 900; pointer-events: none;
@@ -51,7 +45,6 @@ html, body { margin: 0; overflow: hidden; touch-action: none; font-family: syste
 </head>
 <body>
 
-<div id="loading">Загрузка AR...<br>Разрешите доступ к камере</div>
 <div id="hint">Наведите камеру на QR-код</div>
 <div id="bubble"></div>
 
@@ -65,7 +58,7 @@ html, body { margin: 0; overflow: hidden; touch-action: none; font-family: syste
   vr-mode-ui="enabled: false"
   device-orientation-permission-ui="enabled: false"
   cursor="rayOrigin: mouse; fuse: false"
-  renderer="antialias: true; alpha: true; colorManagement: true">
+  renderer="antialias: true; alpha: true">
 
   <a-assets>
     <a-asset-item id="olegModel" src="./dyadya_oleg_hz.glb"></a-asset-item>
@@ -93,41 +86,6 @@ const PHRASES = [
 
 const state = { phraseIdx: 0, speaking: false };
 
-/* ================= Принудительный запуск камеры ================= */
-(async function initCamera() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
-    });
-    console.log('Камера получена');
-
-    const scene = document.querySelector('a-scene');
-    const attachStream = () => {
-      // Ждём, пока A-Frame создаст видеоэлемент
-      const video = document.querySelector('video');
-      if (video && !video.srcObject) {
-        video.srcObject = stream;
-        video.play().catch(e => console.error('Ошибка воспроизведения:', e));
-        console.log('Поток камеры передан в видеоэлемент');
-      }
-    };
-
-    if (scene.hasLoaded) attachStream();
-    else scene.addEventListener('loaded', attachStream);
-
-    // Также пробуем сразу
-    setTimeout(attachStream, 500);
-    setTimeout(attachStream, 1500);
-  } catch (err) {
-    console.error('Не удалось получить доступ к камере:', err);
-    const hint = document.getElementById('hint');
-    hint.textContent = '⚠ Разрешите доступ к камере в настройках браузера';
-    hint.style.display = 'block';
-    hint.style.background = '#ff4444';
-  }
-})();
-
-/* ================= Компонент персонажа ================= */
 AFRAME.registerComponent('character', {
   init() {
     this.mixer = null;
@@ -136,7 +94,6 @@ AFRAME.registerComponent('character', {
     this.model = null;
     this.headAnchor = null;
 
-    // Ждём загрузки ассета
     const asset = document.getElementById('olegModel');
     if (asset.hasLoaded) {
       this.loadModel(asset);
@@ -148,7 +105,6 @@ AFRAME.registerComponent('character', {
   },
 
   loadModel(asset) {
-    // ИСПРАВЛЕНО: используем getAttribute вместо object3D.src
     const src = asset.getAttribute('src');
     console.log('Загрузка модели:', src);
 
@@ -267,7 +223,6 @@ AFRAME.registerComponent('character', {
   }
 });
 
-/* ================= Обновление позиции облачка ================= */
 const bubble = document.getElementById('bubble');
 const characterEl = document.getElementById('character');
 const cameraEl = document.querySelector('[camera]');
@@ -295,7 +250,6 @@ function updateBubblePosition() {
   bubble.style.opacity = '1';
 }
 
-/* ================= UI ================= */
 document.getElementById('talkBtn').addEventListener('click', () => {
   characterEl.components['character'].onTap();
 });
@@ -303,56 +257,13 @@ document.getElementById('stopBtn').addEventListener('click', () => {
   characterEl.components['character'].stopSpeak();
 });
 
-/* ================= Главный цикл ================= */
 const scene = document.querySelector('a-scene');
 scene.addEventListener('render', updateBubblePosition);
 
-/* ================= Подсказка ================= */
 const target = document.getElementById('target0');
 const hint = document.getElementById('hint');
 target.addEventListener('targetFound', () => hint.style.display = 'none');
 target.addEventListener('targetLost', () => hint.style.display = 'block');
-
-/* ================= Диагностика ================= */
-(function () {
-  const loading = document.getElementById('loading');
-  const lines = [];
-  let ready = false;
-  const show = (msg, ok) => {
-    if (ready) return;
-    lines.push((ok === true ? '✔ ' : ok === false ? '✘ ' : '… ') + msg);
-    loading.innerHTML = '<div style="text-align:left;font-size:15px;line-height:1.6;max-width:420px">' +
-      '<b>Запуск AR</b><br>' + lines.join('<br>') + '</div>';
-  };
-  window.addEventListener('error', e => show('Ошибка: ' + e.message, false));
-  show('HTTPS: ' + (window.isSecureContext ? 'да' : 'НЕТ'), window.isSecureContext);
-  show('A-Frame ' + (window.AFRAME ? AFRAME.version : 'не загрузился'), !!window.AFRAME);
-  const mindarOk = !!(window.AFRAME && AFRAME.components['mindar-image-target']);
-  show('MindAR ' + (mindarOk ? 'загрузился' : 'не загрузился'), mindarOk);
-  (async () => {
-    try {
-      const r = await fetch('./targets.mind', { cache: 'no-store' });
-      show('targets.mind: ' + (r.ok ? 'найден' : 'ошибка ' + r.status), r.ok);
-    } catch (e) { show('targets.mind: ' + e.message, false); }
-    try {
-      const r = await fetch('./dyadya_oleg_hz.glb', { cache: 'no-store' });
-      show('dyadya_oleg_hz.glb: ' + (r.ok ? 'найден (' + Math.round(r.headers.get('content-length')/1024) + ' КБ)' : 'ошибка ' + r.status), r.ok);
-    } catch (e) { show('GLB: ' + e.message, false); }
-  })();
-  show('Ожидаю камеру…');
-  const camTimer = setInterval(() => {
-    const v = document.querySelector('video');
-    if (v && v.readyState >= 2) {
-      clearInterval(camTimer);
-      show('Камера работает (' + v.videoWidth + '×' + v.videoHeight + ')', true);
-    }
-  }, 300);
-  scene.addEventListener('arReady', () => {
-    ready = true; clearInterval(camTimer); loading.style.display = 'none';
-  });
-  scene.addEventListener('arError', () => show('Камера недоступна', false));
-  setTimeout(() => { if (!ready) show('AR не запустился за 20 секунд.', false); }, 20000);
-})();
 </script>
 </body>
 </html>
