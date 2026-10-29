@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>AR Дядя Олег</title>
+<script src="./aframe-v1.8.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+<style>
+html, body { margin: 0; overflow: hidden; touch-action: none; font-family: system-ui, sans-serif; }
+#loading {
+  position: fixed; inset: 0; z-index: 2000;
+  display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px;
+  background: #fff; font-size: 18px;
+}
+#hint {
+  position: fixed; top: 16px; left: 16px; right: 16px; z-index: 1000;
+  background: #000b; color: #fff; padding: 10px 14px; border-radius: 10px; text-align: center; font-size: 15px;
+}
+#bubble {
+  position: fixed; z-index: 900; pointer-events: none;
+  max-width: 70vw; padding: 12px 16px;
+  background: #fff; color: #222; font-size: 16px; line-height: 1.4;
+  border: 2px solid #2b6cff; border-radius: 18px;
+  box-shadow: 0 4px 16px #0004;
+  transform: translate(-50%, -100%);
+  opacity: 0; transition: opacity .25s;
+}
+#bubble.show { opacity: 1; }
+#bubble::after {
+  content: ''; position: absolute; left: 50%; bottom: -10px;
+  transform: translateX(-50%);
+  border: 10px solid transparent; border-top-color: #2b6cff; border-bottom: 0;
+}
+#bubble::before {
+  content: ''; position: absolute; left: 50%; bottom: -6px;
+  transform: translateX(-50%);
+  border: 8px solid transparent; border-top-color: #fff; border-bottom: 0;
+}
+#panel {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
+  padding: 8px 8px calc(10px + env(safe-area-inset-bottom));
+  display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;
+}
+.chip {
+  border: 0; border-radius: 999px; padding: 10px 14px; font-size: 14px; color: #222;
+  background: #ffffffe6; box-shadow: 0 1px 4px #0004;
+}
+.chip.on { background: #2b6cff; color: #fff; }
+</style>
+</head>
+<body>
+
+<div id="loading">Загрузка AR...<br>Разрешите доступ к камере</div>
+<div id="hint" class="ui">Наведите камеру на QR-код</div>
+<div id="bubble" class="ui"></div>
+
+<div id="panel" class="ui">
+  <button class="chip" id="talkBtn">💬 Заставить говорить</button>
+  <button class="chip" id="stopBtn">🔇 Стоп</button>
+</div>
+
+<!-- AR-сцена -->
+<a-scene
+  mindar-image="imageTargetSrc: ./targets.mind; uiLoading: no; uiScanning: no; uiError: no"
+  vr-mode-ui="enabled: false"
+  device-orientation-permission-ui="enabled: false"
+  cursor="rayOrigin: mouse; fuse: false">
+
+  <!-- Загружаем модель один раз -->
+  <a-assets>
+    <a-asset-item id="olegModel" src="./dyadya_oleg_hz.glb"></a-asset-item>
+  </a-assets>
+
+  <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+  <a-entity light="type: ambient; intensity: 0.8"></a-entity>
+  <a-entity light="type: directional; intensity: 0.9" position="0.5 1 1"></a-entity>
+
+  <!-- Якорь метки -->
+  <a-entity id="target0" mindar-image-target="targetIndex: 0">
+    <!-- Персонаж. Компонент character загружает GLB и обрабатывает клик -->
+    <a-entity id="character" character="src: #olegModel"></a-entity>
+  </a-entity>
+</a-scene>
+
+<script>
+const T = AFRAME.THREE;
+const rad = T.MathUtils.degToRad;
+
+/* ================= Реплики ================= */
+const PHRASES = [
+  'Привет! Я Дядя Олег. Тапни по мне ещё раз!',
+  'Знаешь, в каждом QR-коде спрятана своя история.',
+  'Сегодня отличный день, чтобы изучить дополненную реальность!',
+  'Бип-буп... то есть, я хотел сказать — приветствую тебя!',
+  'Нажми на меня снова — у меня ещё много интересного.',
+];
+
+const state = { phraseIdx: 0, speaking: false };
+
+/* ================= Компонент персонажа ================= */
+AFRAME.registerComponent('character', {
+  schema: { src: { type: 'selector' } },
+
+  init() {
+    this.mixer = null;
+    this.clips = [];
+    this.currentAction = null;
+    this.model = null;
+    this.headAnchor = null; // точка над головой для облачка
+    this.loadModel();
+
+    // Клик по модели
+    this.el.addEventListener('click', () => this.onTap());
+  },
+
+  loadModel() {
+    const asset = this.data.src;
+    if (!asset) return;
+
+    const loader = new T.GLTFLoader();
+    loader.load(asset.object3D.src || asset.getAttribute('src'), (gltf) => {
+      this.model = gltf.scene;
+
+      // Масштаб и положение: модель должна "стоять" на поверхности метки (y=0)
+      // Обычно GLB экспортируется с центром в середине — сдвигаем вниз на половину высоты
+      const box = new T.Box3().setFromObject(this.model);
+      const size = box.getSize(new T.Vector3());
+      const scale = 0.15; // подберите под размер вашей модели
+      this.model.scale.setScalar(scale);
+      box.setFromObject(this.model);
+      this.model.position.y = -box.min.y; // ноги на y=0
+
+      // Точка над головой
+      this.headAnchor = new T.Object3D();
+      this.headAnchor.position.y = box.max.y * scale + 0.05;
+      this.model.add(this.headAnchor);
+
+      this.el.setObject3D('mesh', this.model);
+
+      // Анимации
+      if (gltf.animations && gltf.animations.length) {
+        this.clips = gltf.animations;
+        this.mixer = new T.AnimationMixer(this.model);
+        console.log('Загружено анимаций:', this.clips.length);
+        this.clips.forEach((c, i) => console.log(`  [${i}] ${c.name || '(без имени)'}, длительность ${c.duration.toFixed(2)}с`));
+      } else {
+        console.warn('В GLB нет анимаций!');
+      }
+
+      this.el.emit('model-ready');
+    }, undefined, (err) => {
+      console.error('Ошибка загрузки GLB:', err);
+    });
+  },
+
+  // Запуск анимации по индексу (номер 1 = индекс 0)
+  playAnimation(index) {
+    if (!this.mixer || !this.clips.length) {
+      console.warn('Анимации недоступны');
+      return;
+    }
+    const idx = (index - 1 + this.clips.length) % this.clips.length; // номер 1 → индекс 0
+    const clip = this.clips[idx];
+    if (!clip) return;
+
+    // Остановить предыдущую
+    if (this.currentAction) {
+      this.currentAction.fadeOut(0.3);
+    }
+
+    const action = this.mixer.clipAction(clip);
+    action.reset();
+    action.setLoop(T.LoopRepeat, Infinity);
+    action.fadeIn(0.3);
+    action.play();
+    this.currentAction = action;
+    console.log('Запущена анимация #' + index + ' (' + clip.name + ')');
+  },
+
+  stopAnimation() {
+    if (this.currentAction) {
+      this.currentAction.fadeOut(0.3);
+      this.currentAction = null;
+    }
+    if (this.mixer) this.mixer.stopAllAction();
+  },
+
+  onTap() {
+    if (state.speaking) return;
+    const phrase = PHRASES[state.phraseIdx % PHRASES.length];
+    state.phraseIdx++;
+    this.playAnimation(1); // анимация номер 1
+    this.speak(phrase);
+  },
+
+  speak(text) {
+    state.speaking = true;
+
+    // Облачко с эффектом печатания
+    const bubble = document.getElementById('bubble');
+    bubble.textContent = '';
+    bubble.classList.add('show');
+    let i = 0;
+    const type = () => {
+      if (i <= text.length) {
+        bubble.textContent = text.slice(0, i);
+        i++;
+        setTimeout(type, 35);
+      }
+    };
+    type();
+
+    // Озвучка
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'ru-RU';
+      u.rate = 1.0;
+      u.pitch = 1.0;
+      u.onend = () => this.stopSpeak();
+      u.onerror = () => this.stopSpeak();
+      window.speechSynthesis.speak(u);
+      this._fallbackStop = setTimeout(() => this.stopSpeak(), Math.max(4000, text.length * 90));
+    } else {
+      this._fallbackStop = setTimeout(() => this.stopSpeak(), text.length * 80);
+    }
+  },
+
+  stopSpeak() {
+    state.speaking = false;
+    if (this._fallbackStop) clearTimeout(this._fallbackStop);
+    document.getElementById('bubble').classList.remove('show');
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    this.stopAnimation();
+  },
+
+  tick(t, dt) {
+    if (this.mixer && dt) {
+      this.mixer.update(dt / 1000);
+    }
+  }
+});
+
+/* ================= Обновление позиции облачка ================= */
+const bubble = document.getElementById('bubble');
+const characterEl = document.getElementById('character');
+const cameraEl = document.querySelector('[camera]');
+
+function updateBubblePosition() {
+  const camera = cameraEl.components.camera && cameraEl.components.camera.camera;
+  if (!camera) return;
+  const comp = characterEl.components['character'];
+  if (!comp || !comp.headAnchor) return;
+  if (!bubble.classList.contains('show')) return;
+
+  const worldPos = new T.Vector3();
+  comp.headAnchor.getWorldPosition(worldPos);
+
+  const projected = worldPos.clone().project(camera);
+  const x = (projected.x * 0.5 + 0.5) * window.innerWidth;
+  const y = (-projected.y * 0.5 + 0.5) * window.innerHeight;
+
+  if (projected.z > 1) {
+    bubble.style.opacity = '0';
+    return;
+  }
+  bubble.style.left = x + 'px';
+  bubble.style.top  = (y - 20) + 'px';
+  bubble.style.opacity = '1';
+}
+
+/* ================= UI ================= */
+document.getElementById('talkBtn').addEventListener('click', () => {
+  characterEl.components['character'].onTap();
+});
+document.getElementById('stopBtn').addEventListener('click', () => {
+  characterEl.components['character'].stopSpeak();
+});
+
+/* ================= Главный цикл ================= */
+const scene = document.querySelector('a-scene');
+scene.addEventListener('render', updateBubblePosition);
+
+/* ================= Подсказка ================= */
+const target = document.getElementById('target0');
+const hint = document.getElementById('hint');
+target.addEventListener('targetFound', () => hint.style.display = 'none');
+target.addEventListener('targetLost',  () => hint.style.display = 'block');
+
+/* ================= Диагностика ================= */
+(function () {
+  const loading = document.getElementById('loading');
+  const lines = [];
+  let ready = false;
+  const show = (msg, ok) => {
+    if (ready) return;
+    lines.push((ok === true ? '✔ ' : ok === false ? '✘ ' : '… ') + msg);
+    loading.innerHTML = '<div style="text-align:left;font-size:15px;line-height:1.6;max-width:420px">' +
+      '<b>Запуск AR</b><br>' + lines.join('<br>') + '</div>';
+  };
+  window.addEventListener('error', e => show('Ошибка: ' + e.message, false));
+  show('HTTPS: ' + (window.isSecureContext ? 'да' : 'НЕТ — камера не запустится'), window.isSecureContext);
+  show('A-Frame ' + (window.AFRAME ? AFRAME.version : 'не загрузился'), !!window.AFRAME);
+  const mindarOk = !!(window.AFRAME && AFRAME.components['mindar-image-target']);
+  show('MindAR ' + (mindarOk ? 'загрузился' : 'не загрузился'), mindarOk);
+  (async () => {
+    try {
+      const r = await fetch('./targets.mind', { cache: 'no-store' });
+      show('targets.mind: ' + (r.ok ? 'найден' : 'ошибка ' + r.status), r.ok);
+    } catch (e) { show('targets.mind: ' + e.message, false); }
+    try {
+      const r = await fetch('./dyadya_oleg_hz.glb', { cache: 'no-store' });
+      show('dyadya_oleg_hz.glb: ' + (r.ok ? 'найден (' + Math.round(r.headers.get('content-length')/1024) + ' КБ)' : 'ошибка ' + r.status), r.ok);
+    } catch (e) { show('GLB: ' + e.message, false); }
+  })();
+  show('Ожидаю камеру…');
+  const camTimer = setInterval(() => {
+    const v = document.querySelector('video');
+    if (v && v.readyState >= 2) {
+      clearInterval(camTimer);
+      show('Камера работает (' + v.videoWidth + '×' + v.videoHeight + ')', true);
+    }
+  }, 300);
+  scene.addEventListener('arReady', () => {
+    ready = true; clearInterval(camTimer); loading.style.display = 'none';
+  });
+  scene.addEventListener('arError', () => show('Камера недоступна', false));
+  setTimeout(() => { if (!ready) show('AR не запустился за 20 секунд.', false); }, 20000);
+})();
+</script>
+</body>
+</html>
