@@ -49,37 +49,6 @@ html, body { margin: 0; overflow: hidden; touch-action: none; font-family: syste
 .chip.on { background: #2b6cff; color: #fff; }
 </style>
 </head>
-
- <script>
-// Явный запуск камеры для A-Frame 1.8.0 + MindAR
-document.addEventListener('DOMContentLoaded', () => {
-  const scene = document.querySelector('a-scene');
-  
-  scene.addEventListener('loaded', () => {
-    // Принудительно запускаем камеру
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          facingMode: 'environment',
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
-        } 
-      })
-      .then(stream => {
-        console.log('Камера запущена вручную');
-        const video = document.querySelector('video');
-        if (video && !video.srcObject) {
-          video.srcObject = stream;
-        }
-      })
-      .catch(err => {
-        console.error('Ошибка запуска камеры:', err);
-      });
-    }
-  });
-});
-</script>
-  
 <body>
 
 <div id="loading">Загрузка AR...<br>Разрешите доступ к камере</div>
@@ -96,6 +65,7 @@ document.addEventListener('DOMContentLoaded', () => {
   mindar-image="imageTargetSrc: ./targets.mind; uiLoading: no; uiScanning: no; uiError: no"
   vr-mode-ui="enabled: false"
   device-orientation-permission-ui="enabled: false"
+  renderer="antialias: true; alpha: true; colorManagement: true"
   cursor="rayOrigin: mouse; fuse: false">
 
   <!-- Загружаем модель один раз -->
