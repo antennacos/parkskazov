@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>AR Персонаж</title>
+
+  <!-- Если будет чёрный экран — замените на https://aframe.io/releases/1.5.0/aframe.min.js -->
+  <script src="./aframe-v1.8.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+
+  <style>
+    html, body { margin: 0; overflow: hidden; touch-action: none; font-family: system-ui, sans-serif; }
+    #loading {
+      position: fixed; inset: 0; z-index: 2000;
+      display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px;
+      background: #fff; font-size: 18px;
+    }
+    #hint {
+      position: fixed; left: 16px; right: 16px; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 1000;
+      background: #000b; color: #fff; padding: 10px 14px; border-radius: 10px; text-align: center; font-size: 15px;
+      pointer-events: none;
+    }
+    #toast {
+      display: none; position: fixed; top: 16px; left: 16px; right: 16px; z-index: 1500;
+      background: #b3261e; color: #fff; padding: 10px 14px; border-radius: 10px; font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">Загрузка AR...<br>Разрешите доступ к камере</div>
+  <div id="hint">Наведите камеру на метку</div>
+  <div id="toast"></div>
+
+  <script>
+  /* =====================================================================
+     НАСТРОЙКИ — всё, что обычно меняют, собрано здесь
+     ===================================================================== */
+  const CONFIG = {
+    // Номера анимаций — как в Meshy, считая с 1 (№1 — стандартный бег).
+    TAP_ANIMATION: 2,        // какая анимация играет по нажатию на персонажа
+    IDLE_ANIMATION: null,    // что играет в покое: null — стоит неподвижно
+                             // (первый кадр анимации TAP_ANIMATION), 1 — бег по кругу и т. д.
+
+    // Облачко
+    GREETING: 'Привет! Рад тебя видеть!',   // текст приветствия
+    BUBBLE_SECONDS: 4,       // сколько секунд облачко висит после нажатия
+
+    // Персонаж
+    MODEL_HEIGHT: 0.8,       // рост в ширинах метки (1 = ширина картинки-метки)
+    DEFAULT_TURN: 0,         // начальный поворот, градусы. 0 — смотрит на нижний край метки,
+                             // 180 — на верхний, 90 / -90 — вбок
+
+    // Стрелки поворота
+    TURN_STEP: 15,           // на сколько градусов поворачивает одно нажатие
+    HOLD_SPEED: 90,          // скорость вращения при удержании стрелки, градусов в секунду
+  };
+  /* ===================================================================== */
+
+  const T = AFRAME.THREE;
+  const rad = d => d * Math.PI / 180;
+
+  function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    setTimeout(() => t.style.display = 'none', 8000);
+  }
+
+  function canvasTexture(canvas) {
+    const tex = new T.CanvasTexture(canvas);
+    if (T.SRGBColorSpace) tex.colorSpace = T.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
+  }
+
+  /* ---------- Облачко с текстом (рисуется на canvas, кириллица работает) ---------- */
+  function makeBubble(text) {
+    const W = 512, pad = 36, fs = 38, lh = 48, tail = 40, r = 32, border = 5;
+    const c = document.createElement('canvas');
+    const ctx = c.getContext('2d');
+    ctx.font = `600 ${fs}px system-ui, sans-serif`;
+
+    // перенос строк по ширине
+    const lines = [];
+    let line = '';
+    for (const word of text.split(/\s+/)) {
+      const test = line ? line + ' ' + word : word;
+      if (ctx.measureText(test).width > W - 2 * pad && line) { lines.push(line); line = word; }
+      else line = test;
+    }
+    if (line) lines.push(line);
+
+    const boxH = pad * 2 + lines.length * lh - (lh - fs);
+    c.width = W;
+    c.height = boxH + tail + border;
+    const g = c.getContext('2d');
+    const x0 = border, y0 = border, x1 = W - border, y1 = boxH;
+
+    // скруглённый прямоугольник + хвостик снизу по центру
+    g.beginPath();
+    g.moveTo(x0 + r, y0);
+    g.lineTo(x1 - r, y0); g.arcTo(x1, y0, x1, y0 + r, r);
+    g.lineTo(x1, y1 - r); g.arcTo(x1, y1, x1 - r, y1, r);
+    g.lineTo(W / 2 + 28, y1); g.lineTo(W / 2, y1 + tail - 4); g.lineTo(W / 2 - 28, y1);
+    g.lineTo(x0 + r, y1); g.arcTo(x0, y1, x0, y1 - r, r);
+    g.lineTo(x0, y0 + r); g.arcTo(x0, y0, x0 + r, y0, r);
+    g.closePath();
+    g.fillStyle = '#ffffff';
+    g.fill();
+    g.lineWidth = border;
+    g.strokeStyle = '#1d2433';
+    g.stroke();
+
+    g.font = `600 ${fs}px system-ui, sans-serif`;
+    g.fillStyle = '#1d2433';
+    g.textAlign = 'center';
+    g.textBaseline = 'alphabetic';
+    lines.forEach((l, i) => g.fillText(l, W / 2, pad + fs * 0.85 + i * lh));
+
+    const w = 0.55, h = w * c.height / c.width;
+    const geo = new T.PlaneGeometry(w, h).translate(0, h / 2, 0); // точка крепления — кончик хвостика
+    const mat = new T.MeshBasicMaterial({ map: canvasTexture(c), transparent: true, side: T.DoubleSide, depthTest: false });
+    const mesh = new T.Mesh(geo, mat);
+    mesh.renderOrder = 10;
+    return mesh;
+  }
+
+  /* ---------- Иконка-стрелка поворота: круглая кнопка + дуга со стрелкой ---------- */
+  function makeTurnIcon(clockwise) {
+    const S = 256, cx = S / 2, cy = S / 2;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+
+    // подложка
+    g.beginPath(); g.arc(cx, cy, 118, 0, Math.PI * 2);
+    g.fillStyle = 'rgba(255,255,255,0.88)'; g.fill();
+    g.lineWidth = 6; g.strokeStyle = '#1d2433'; g.stroke();
+
+    // для стрелки «против часовой» зеркалим рисунок
+    if (!clockwise) { g.translate(S, 0); g.scale(-1, 1); }
+
+    // дуга 270°: в canvas углы растут по часовой стрелке
+    const R = 64, a0 = -0.8 * Math.PI, a1 = a0 + 1.5 * Math.PI;
+    g.beginPath(); g.arc(cx, cy, R, a0, a1);
+    g.lineWidth = 18; g.lineCap = 'round'; g.strokeStyle = '#2b6cff'; g.stroke();
+
+    // наконечник: касательная к окружности в конце дуги — (−sin a, cos a)
+    const px = cx + R * Math.cos(a1), py = cy + R * Math.sin(a1);
+    const tx = -Math.sin(a1), ty = Math.cos(a1);   // направление движения
+    const nx = Math.cos(a1), ny = Math.sin(a1);    // от центра наружу
+    const L = 30, Wd = 26;
+    g.beginPath();
+    g.moveTo(px + tx * L, py + ty * L);
+    g.lineTo(px + nx * Wd, py + ny * Wd);
+    g.lineTo(px - nx * Wd, py - ny * Wd);
+    g.closePath();
+    g.fillStyle = '#2b6cff'; g.fill();
+
+    const geo = new T.PlaneGeometry(0.17, 0.17).rotateX(-Math.PI / 2); // лежит на столе
+    const mat = new T.MeshBasicMaterial({ map: canvasTexture(c), transparent: true, depthWrite: false });
+    return new T.Mesh(geo, mat);
+  }
+
+  /* ---------- Мягкая тень под ногами ---------- */
+  function makeShadow() {
+    const S = 128, c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    const grd = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    grd.addColorStop(0, 'rgba(0,0,0,0.45)');
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grd; g.fillRect(0, 0, S, S);
+    const geo = new T.PlaneGeometry(0.4, 0.4).rotateX(-Math.PI / 2);
+    return new T.Mesh(geo, new T.MeshBasicMaterial({ map: canvasTexture(c), transparent: true, depthWrite: false }));
+  }
+
+  /* =====================================================================
+     Компонент персонажа: модель, анимации, облачко, стрелки, нажатия
+     ===================================================================== */
+  AFRAME.registerComponent('ar-hero', {
+    init() {
+      this.stage = this.el.object3D;                       // «пол» на метке, ось Y — вверх
+      this.turntable = document.getElementById('turntable').object3D;
+      this.heroEl = document.getElementById('hero');
+      this.anchor = this.el.parentNode.object3D;           // якорь MindAR
+
+      // поворот персонажа: target — куда крутим, current — где сейчас (плавно догоняет)
+      this.turn = { target: rad(CONFIG.DEFAULT_TURN), current: rad(CONFIG.DEFAULT_TURN), hold: 0 };
+      this.turntable.rotation.y = this.turn.current;
+
+      // тень
+      this.stage.add(makeShadow());
+
+      // стрелки у ног, перед персонажем: слева — против часовой, справа — по часовой
+      this.arrowCCW = makeTurnIcon(false);
+      this.arrowCW = makeTurnIcon(true);
+      this.arrowCCW.position.set(-0.3, 0.003, 0.28);
+      this.arrowCW.position.set(0.3, 0.003, 0.28);
+      this.stage.add(this.arrowCCW, this.arrowCW);
+
+      // облачко
+      this.bubble = makeBubble(CONFIG.GREETING);
+      this.bubble.position.set(0, CONFIG.MODEL_HEIGHT + 0.06, 0);
+      this.bubble.visible = false;
+      this.bubbleState = { shownAt: 0, hideAt: 0 };
+      this.stage.add(this.bubble);
+
+      // невидимая «зона нажатия» вокруг персонажа — попадать пальцем проще, чем в саму модель
+      this.hitbox = new T.Mesh(
+        new T.CylinderGeometry(0.2, 0.2, CONFIG.MODEL_HEIGHT, 16).translate(0, CONFIG.MODEL_HEIGHT / 2, 0),
+        new T.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false })
+      );
+      this.stage.add(this.hitbox);
+
+      this.heroEl.addEventListener('model-loaded', () => this.onModel());
+      this.heroEl.addEventListener('model-error', () => toast('Не удалось загрузить модель персонажа'));
+
+      this.raycaster = new T.Raycaster();
+      this.ndc = new T.Vector2();
+      this.camPos = new T.Vector3();
+      this.onDown = this.onDown.bind(this);
+      this.onUp = this.onUp.bind(this);
+      window.addEventListener('pointerdown', this.onDown);
+      window.addEventListener('pointerup', this.onUp);
+      window.addEventListener('pointercancel', this.onUp);
+    },
+
+    /* --- модель загрузилась: подгоняем размер, ставим на пол, готовим анимации --- */
+    onModel() {
+      const model = this.heroEl.getObject3D('mesh');
+
+      // габариты модели в её собственных координатах
+      const parent = model.parent;
+      parent.remove(model);
+      model.position.set(0, 0, 0); model.scale.setScalar(1); model.updateMatrixWorld(true);
+      const box = new T.Box3().setFromObject(model);
+      parent.add(model);
+
+      const size = box.getSize(new T.Vector3());
+      const s = CONFIG.MODEL_HEIGHT / (size.y || 1);
+      model.scale.setScalar(s);
+      // ступни — на пол (y = 0), центр — над центром метки
+      model.position.set(-(box.min.x + size.x / 2) * s, -box.min.y * s, -(box.min.z + size.z / 2) * s);
+
+      // зона нажатия по ширине модели
+      const r = Math.max(0.12, Math.max(size.x, size.z) * s * 0.5);
+      this.hitbox.scale.set(r / 0.2, 1, r / 0.2);
+
+      // анимации
+      const clips = model.animations || [];
+      console.log('Анимации в модели:', clips.map((c, i) => `№${i + 1} «${c.name}» ${c.duration.toFixed(1)} с`));
+      this.mixer = new T.AnimationMixer(model);
+      this.idleAction = null;
+      this.tapAction = null;
+
+      const pick = (num, what) => {
+        if (num == null) return null;
+        const clip = clips[num - 1];
+        if (!clip) {
+          toast(`В модели ${clips.length} анимаций, а ${what} = ${num}. Поменяйте номер в CONFIG.`);
+          return null;
+        }
+        return this.mixer.clipAction(clip);
+      };
+      this.tapAction = pick(CONFIG.TAP_ANIMATION, 'TAP_ANIMATION');
+      this.idleAction = pick(CONFIG.IDLE_ANIMATION, 'IDLE_ANIMATION');
+
+      if (this.tapAction) {
+        this.tapAction.setLoop(T.LoopOnce, 1);
+        this.tapAction.clampWhenFinished = true;
+      }
+      this.toRest(false);
+
+      this.mixer.addEventListener('finished', e => {
+        if (e.action === this.tapAction) this.toRest(true);
+      });
+    },
+
+    // поза покоя: либо анимация покоя по кругу, либо первый кадр анимации нажатия
+    toRest(fade) {
+      if (this.idleAction) {
+        this.idleAction.reset().setEffectiveWeight(1).play();
+        if (fade) {
+          this.idleAction.fadeIn(0.3);
+          if (this.tapAction) this.tapAction.fadeOut(0.3);
+        } else if (this.tapAction) this.tapAction.stop();
+      } else if (this.tapAction) {
+        this.tapAction.reset().play();
+        this.tapAction.paused = true;   // замираем на первом кадре
+      }
+    },
+
+    // нажали на персонажа: анимация с начала + облачко
+    playTap() {
+      if (this.tapAction) {
+        if (this.idleAction) {
+          this.idleAction.fadeOut(0.2);
+          this.tapAction.reset().setEffectiveWeight(1).fadeIn(0.2).play();
+        } else {
+          this.tapAction.reset().play();
+        }
+      }
+      const now = performance.now();
+      if (!this.bubble.visible) this.bubbleState.shownAt = now;
+      this.bubbleState.hideAt = now + CONFIG.BUBBLE_SECONDS * 1000;
+      this.bubble.visible = true;
+    },
+
+    stepTurn(dir) { this.turn.target += dir * rad(CONFIG.TURN_STEP); },
+
+    /* --- нажатия: луч из камеры через точку касания --- */
+    onDown(e) {
+      if (!this.anchor.visible) return;
+      const scene = this.el.sceneEl, cam = scene.camera, canvas = scene.canvas;
+      if (!cam || !canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      this.ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+      cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert(); // MindAR задаёт проекцию сам
+      this.raycaster.setFromCamera(this.ndc, cam);
+
+      const hit = this.raycaster.intersectObjects([this.arrowCCW, this.arrowCW, this.hitbox], false)[0];
+      if (!hit) return;
+      if (hit.object === this.hitbox) { this.playTap(); return; }
+
+      const dir = hit.object === this.arrowCW ? -1 : 1;   // по часовой (вид сверху) = отрицательный угол
+      this.pressed = hit.object;
+      this.pressed.scale.setScalar(0.88);
+      this.stepTurn(dir);
+      clearTimeout(this.holdTimer);
+      this.holdTimer = setTimeout(() => { this.turn.hold = dir; }, 350); // удержание → плавное вращение
+    },
+
+    onUp() {
+      clearTimeout(this.holdTimer);
+      this.turn.hold = 0;
+      if (this.pressed) { this.pressed.scale.setScalar(1); this.pressed = null; }
+    },
+
+    tick(time, dt) {
+      const sec = Math.min(dt || 16, 100) / 1000;
+      if (this.mixer) this.mixer.update(sec);
+
+      // поворот
+      if (this.turn.hold) this.turn.target += this.turn.hold * rad(CONFIG.HOLD_SPEED) * sec;
+      this.turn.current += (this.turn.target - this.turn.current) * Math.min(1, sec * 12);
+      this.turntable.rotation.y = this.turn.current;
+      if (!this.anchor.visible) this.onUp();
+
+      // облачко: всегда лицом к камере + появление/исчезание
+      const b = this.bubble, st = this.bubbleState;
+      if (b.visible) {
+        const now = performance.now();
+        let k = Math.min(1, (now - st.shownAt) / 250);
+        k = 1 - Math.pow(1 - k, 3);                                   // плавное «выпрыгивание»
+        if (now > st.hideAt) k = Math.max(0, 1 - (now - st.hideAt) / 200);
+        if (now > st.hideAt + 200) b.visible = false;
+        b.scale.setScalar(Math.max(0.001, k));
+        this.el.sceneEl.camera.getWorldPosition(this.camPos);
+        b.lookAt(this.camPos);
+      }
+    },
+
+    remove() {
+      window.removeEventListener('pointerdown', this.onDown);
+      window.removeEventListener('pointerup', this.onUp);
+      window.removeEventListener('pointercancel', this.onUp);
+    }
+  });
+  </script>
+
+  <!-- filterMinCF / filterBeta — сглаживание дрожания: метка лежит на столе неподвижно -->
+  <a-scene
+    mindar-image="imageTargetSrc: ./targets.mind; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: 0.0001; filterBeta: 0.001"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false">
+
+    <a-assets timeout="20000">
+      <!-- файл модели персонажа -->
+      <a-asset-item id="heroModel" src="./dyadya_oleg_hz.glb"></a-asset-item>
+    </a-assets>
+
+    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+    <a-entity light="type: ambient; intensity: 0.9"></a-entity>
+    <a-entity light="type: directional; intensity: 1.2" position="0.5 1 1.5"></a-entity>
+
+    <a-entity id="target0" mindar-image-target="targetIndex: 0">
+      <!--
+        Метка лежит на столе. MindAR кладёт контент в плоскость картинки,
+        поэтому «пол» поворачиваем на 90°: теперь Y — вверх от стола,
+        а лицо персонажа (+Z модели) смотрит на нижний край метки.
+      -->
+      <a-entity id="stage" rotation="90 0 0" ar-hero>
+        <a-entity id="turntable">
+          <a-entity id="hero" gltf-model="#heroModel"></a-entity>
+        </a-entity>
+      </a-entity>
+    </a-entity>
+  </a-scene>
+
+  <script>
+    const hint = document.getElementById('hint');
+    const target = document.getElementById('target0');
+    target.addEventListener('targetFound', () => hint.textContent = 'Нажми на персонажа или на стрелки');
+    target.addEventListener('targetLost', () => hint.textContent = 'Наведите камеру на метку');
+  </script>
+
+  <script>
+  /* ===== Диагностика запуска: показывает по шагам, что загрузилось ===== */
+  (function () {
+    const scene = document.querySelector('a-scene');
+    const loading = document.getElementById('loading');
+    const lines = [];
+    let ready = false;
+
+    const show = (msg, ok) => {
+      if (ready) return;
+      lines.push((ok === true ? '✔ ' : ok === false ? '✘ ' : '… ') + msg);
+      loading.innerHTML = '<div style="text-align:left;font-size:15px;line-height:1.6;max-width:420px">' +
+        '<b>Запуск AR</b><br>' + lines.join('<br>') + '</div>';
+    };
+
+    // Любые ошибки скриптов — на экран (на телефоне консоль не видна)
+    window.addEventListener('error', e => show('Ошибка: ' + e.message, false));
+    window.addEventListener('unhandledrejection', e => {
+      const r = e.reason;
+      show('Ошибка: ' + (r && (r.message || r.toString()) || 'неизвестная'), false);
+    });
+
+    show('Защищённое соединение (https): ' + (window.isSecureContext ? 'да' : 'НЕТ — камера не запустится'), window.isSecureContext);
+    show('A-Frame ' + (window.AFRAME ? AFRAME.version : 'не загрузился'), !!window.AFRAME);
+    const mindarOk = !!(window.AFRAME && AFRAME.components['mindar-image-target']);
+    show('MindAR ' + (mindarOk ? 'загрузился' : 'не загрузился (нет интернета или ошибка подключения)'), mindarOk);
+
+    // Проверяем, что файлы реально доступны по указанным путям
+    const check = async (url, name) => {
+      try {
+        // HEAD — проверяем наличие файла, не скачивая его целиком (модель может весить мегабайты)
+        let r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+        if (r.status === 405) r = await fetch(url, { cache: 'no-store' });
+        show(name + ' (' + url + '): ' + (r.ok ? 'найден' : 'ошибка ' + r.status + ' — проверьте имя файла'), r.ok);
+      } catch (err) {
+        show(name + ' (' + url + '): не загружается — ' + err.message, false);
+      }
+    };
+    const raw = scene.getAttribute('mindar-image');
+    const targetSrc = typeof raw === 'string'
+      ? ((/imageTargetSrc:\s*([^;]+)/.exec(raw) || [])[1] || '').trim()
+      : raw && raw.imageTargetSrc;
+    if (targetSrc) check(targetSrc, 'Файл меток');
+    document.querySelectorAll('a-asset-item').forEach(a => check(a.getAttribute('src'), 'Модель'));
+
+    // Камера
+    show('Ожидаю камеру…');
+    const camTimer = setInterval(() => {
+      const v = document.querySelector('video');
+      if (v && v.readyState >= 2) {
+        clearInterval(camTimer);
+        show('Камера работает (' + v.videoWidth + '×' + v.videoHeight + ')', true);
+        show('Запускаю распознавание…');
+      }
+    }, 300);
+
+    scene.addEventListener('arReady', () => {
+      ready = true;
+      clearInterval(camTimer);
+      loading.style.display = 'none';
+    });
+    scene.addEventListener('arError', () => show('Камера недоступна: нет разрешения или её занимает другое приложение', false));
+
+    setTimeout(() => {
+      if (!ready) show('AR не запустился за 20 секунд. Сделайте скриншот этого экрана.', false);
+    }, 20000);
+  })();
+  </script>
+</body>
+</html>
